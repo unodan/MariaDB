@@ -5,27 +5,31 @@
 ########################################################################################################################
 import os
 import time
-import pymysql
 import logging as lg
+
+from pymysql import connect
+from pymysql.cursors import Cursor
 
 version = '0.1'
 
 
 class MariaDB:
-    def __init__(self, log_file=None):
+    def __init__(self, **kwargs):
         self.host = None
+        self.port = None
         self.conn = None
         self.cursor = None
         self.db_name = None
         self.db_user = None
         self.db_password = None
-        self.class_name = self.__class__.__name__
+        self.charset = None
 
-        if not log_file:
-            log_file = self.class_name + '.log'
+        log_file = kwargs.get('log_file', 'maria.log')
+        log_level = kwargs.get('log_level', lg.DEBUG)
+        log_format = kwargs.get('log_format', '%(levelname)s:%(name)s:%(asctime)s:%(message)s')
+        log_datefmt = kwargs.get('log_datefmt', '%Y/%m/%d %I:%M:%S')
 
-        lg.basicConfig(filename=log_file, format='%(levelname)s:%(name)s:%(asctime)s:%(message)s',
-                       datefmt='%Y/%m/%d %I:%M:%S', level=lg.DEBUG)
+        lg.basicConfig(filename=log_file, level=log_level, format=log_format, datefmt=log_datefmt)
         lg.info('__init__:Object created')
 
     def use(self, database, **kwargs):
@@ -51,10 +55,10 @@ class MariaDB:
         except Exception as err:
             lg.error('dump:' + str(err))
 
-    def close(self):
+    def connection_close(self):
         try:
-            self.cursor.close()
-            self.conn.close()
+            self.cursor.connection_close()
+            self.conn.connection_close()
             self.conn = None
             self.cursor = None
             lg.info(f'close:Closed database ({self.db_name})')
@@ -76,44 +80,38 @@ class MariaDB:
         if not info:
             return
 
+        self.host = info['host']
+        self.port = info['port']
+        self.db_user = info['user']
+        self.db_password = info['password']
+        self.charset = info['charset']
+
         database = self.db_name = kwargs.get('database', database)
         try:
-            self.conn = pymysql.connect(
-                host=info['host'], port=info['port'], user=info['user'],
-                passwd=info['password'], charset=info['charset'])
-
-            self.db_user = info['user']
-            self.db_password = info['password']
-            self.host = info['host']
+            self.conn = connect(
+                host=self.host, port=self.port,
+                user=self.db_user, passwd=self.db_password, charset=self.charset)
             self.cursor = self.conn.cursor()
 
             if database:
                 if not self.database_exist(database):
                     self.create_database(database)
-
                 self.use(database)
 
             lg.info(f'connect:Connection authenticated:('
-                    f'host={info["host"]}, '
-                    f'port={info["port"]}, '
-                    f'user={info["user"]}, '
+                    f'host={self.host}, '
+                    f'port={self.port}, '
+                    f'user={self.db_user}, '
                     f'database={database} '
-                    f'charset={info["charset"]})')
-
+                    f'charset={self.charset})')
             return True
-
         except Exception as err:
             lg.error(f'connect:{str(err)}')
 
     def execute(self, sql, args=None):
         try:
-            if not args:
-                self.cursor.execute(sql)
-            else:
-                self.cursor.execute(sql, args)
             lg.info(f'execute:{sql}')
-            return True
-
+            return self.cursor.execute(sql, args)
         except Exception as err:
             lg.error(f'execute:{str(err)}:{sql}')
 
@@ -132,57 +130,45 @@ class MariaDB:
     def drop_table(self, table):
         sql = f'DROP TABLE {table}'
         try:
-            self.cursor.execute(sql)
             lg.info(f'drop_table:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'drop_table:{str(err)}:{sql}')
 
     def drop_index(self, table, index):
         sql = f'DROP INDEX {index} ON {table};'
         try:
-            self.cursor.execute(sql)
             lg.info(f'drop_index:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'drop_index:{str(err)}:{sql}')
 
     def drop_database(self, database, **kwargs):
         database = kwargs.get('database', database)
-
         sql = f'DROP DATABASE {database};'
         try:
-            self.cursor.execute(sql)
             lg.info(f'drop_database:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'drop_database:{str(err)}:{sql}')
 
     def create_table(self, table, sql, **kwargs):
         database = kwargs.get('database', self.db_name)
-        sql = f'CREATE TABLE {table} ({sql}) ENGINE=%s'
-
         database_engine = kwargs.get('database_engine', 'InnoDB')
 
+        sql = f'CREATE TABLE {table} ({sql}) ENGINE=%s'
         try:
-            if database == self.db_name:
-                self.cursor.execute(sql, (database_engine,))
-            else:
-                db = self.db_name
-                self.use(database)
-                self.cursor.execute(sql)
-                self.use(db)
             lg.info('create_table:' + sql)
-            return True
+            if database == self.db_name:
+                return self.cursor.execute(sql, (database_engine,))
         except Exception as err:
             lg.error(f'create_table:{str(err)}:{sql}')
 
     def create_index(self, table, column, index):
         sql = f'CREATE INDEX {index} ON {table}({column});'
         try:
-            self.cursor.execute(sql)
             lg.info(f'create_index:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'create_index:{str(err)}:{sql}')
 
@@ -191,17 +177,15 @@ class MariaDB:
 
         sql = f'CREATE DATABASE {database};'
         try:
-            self.cursor.execute(sql)
             lg.info(f'create_database:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'create_database:{str(err)}:{sql}')
 
     def row_exist(self, table, _id):
         sql = f'SELECT id FROM {table} WHERE id=%s;'
         if self.execute(sql, (_id,)):
-            if self.fetchone():
-                return True
+            return self.fetchone()
 
     def table_exist(self, table, **kwargs):
         database = kwargs.get('database', self.db_name)
@@ -209,8 +193,7 @@ class MariaDB:
 
         try:
             self.cursor.execute(sql, (database, table))
-            if self.cursor.fetchone():
-                return True
+            return self.cursor.fetchone()
         except Exception as err:
             lg.error(f'table_exist:{str(err)}')
 
@@ -221,17 +204,14 @@ class MariaDB:
         if database:
             sql = f'SELECT 1 FROM information_schema.statistics WHERE table_schema="{database}" AND ' \
                   f'table_name="{table}" AND index_name="{index}";'
-
             try:
-                if database == self.db_name:
-                    if self.cursor.execute(sql) and self.cursor.fetchone():
-                        result = True
+                if database == self.db_name and self.cursor.execute(sql):
+                    result = self.cursor.fetchone()
                 else:
-                    db_name = self.db_name
                     self.use(database)
-                    if self.cursor.execute(sql) and self.cursor.fetchone():
-                        result = True
-                    self.use(db_name)
+                    if self.cursor.execute(sql):
+                        result = self.cursor.fetchone()
+                    self.use(database)
             except Exception as err:
                 lg.error(f'index_exist:{str(err)}')
 
@@ -243,8 +223,8 @@ class MariaDB:
         sql = 'SHOW DATABASES;'
         try:
             self.cursor.execute(sql)
-            for r in self.cursor.fetchall():
-                if database in r:
+            for row in self.cursor.fetchall():
+                if database in row:
                     return True
         except Exception as err:
             lg.error(f'database_exist:{str(err)}')
@@ -256,32 +236,34 @@ class MariaDB:
 
         sql = f"INSERT INTO {table} ({','.join(column_names[1:])}) VALUES ({('%s,' * len(row)).rstrip(',')});"
         try:
-            self.cursor.execute(sql, row)
             lg.info(f'insert_row:{sql}')
+            self.cursor.execute(sql, row)
             return self.cursor.lastrowid
         except Exception as err:
             lg.error(f'insert_row:{str(err)}:{sql}')
 
-    def update_row(self, table, row, _id):
+    def update_row(self, table, _id, row):
+        column_names = []
+        for name in self.get_columns_metadata(table):
+            column_names.append(name[3])
+
         parts = ''
         sql = f'UPDATE {table} SET '
-        for f in row:
-            parts += (f + '=%s,')
-        sql = sql + parts[:-1] + ' WHERE id=%s;'
+        for name in column_names[1:]:
+            parts += (name + '=%s,')
+        sql += (parts[:-1] + ' WHERE id=%s;')
 
         try:
-            self.cursor.execute(sql, row)
             lg.info(f'update_row:{sql}')
-            return True
+            return self.cursor.execute(sql, list(row) + [_id])
         except Exception as err:
             lg.error(f'update_row:{str(err)}:{sql}')
 
     def delete_row(self, table, _id):
         sql = f'DELETE FROM {table} WHERE id = %s;'
         try:
-            self.cursor.execute(sql, (_id,))
             lg.info(f'delete_row:{sql}')
-            return True
+            return self.cursor.execute(sql, (_id,))
         except Exception as err:
             lg.error(f'delete_row:{str(err)}:{sql}')
 
@@ -295,12 +277,10 @@ class MariaDB:
         except Exception as err:
             lg.error(f'get_databases:{str(err)}:{sql}')
 
-    def get_tables(self, database=None, **kwargs):
-        if not database:
-            database = self.db_name
+    def get_tables(self, **kwargs):
+        database = kwargs.get('database', self.db_name)
 
         sql = "SHOW TABLES;"
-        database = kwargs.get('database', database)
 
         try:
             if database == self.db_name:
@@ -312,7 +292,6 @@ class MariaDB:
                 self.cursor.execute(sql)
                 rows = self.cursor.fetchall()
                 self.use(db)
-
             if rows:
                 return tuple([i[0] for i in rows])
         except Exception as err:
@@ -366,16 +345,15 @@ class MariaDB:
         sql = f'SET AUTOCOMMIT = {kwargs.get("autocommit", True)};'
 
         try:
-            self.cursor.execute(sql)
             lg.info(f'set_autocommit:{sql}')
-            return True
+            return self.cursor.execute(sql)
         except Exception as err:
             lg.error(f'set_autocommit:{str(err)}:{sql}')
 
     def get_table_status(self, table=None, **kwargs):
-        sql = "SHOW TABLE STATUS"
         database = kwargs.get('database', self.db_name)
 
+        sql = "SHOW TABLE STATUS"
         if table:
             sql += f" WHERE Name='{table}'"
 

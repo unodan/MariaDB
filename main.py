@@ -3,7 +3,7 @@ from db_maria import MariaDB
 
 
 def main():
-    db = MariaDB(log_file='db_maria.log')
+    db = MariaDB()
 
     db_name = 'mydb'
 
@@ -46,8 +46,9 @@ def main():
         print(f'Connected to database "{info["database"]}" as user "{info["user"]}" successful.')
 
         _id = db.insert_row('users', ('Mary', 'Jane', '1 234-5678'))
-        if _id and db.insert_row('stats', (_id, 3600, 'Good', 420)):
-            db.commit()
+        if _id:
+            db.insert_row('stats', (_id, 3600, 'Good', 420))
+            db.update_row('users', _id, ('Scary', 'Jane', '2 234-5678'))
     else:
         print(f'Could not connected to database "{info["database"]}" as user "{info["user"]}".')
 
