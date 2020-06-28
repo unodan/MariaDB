@@ -8,7 +8,6 @@ import time
 import logging as lg
 
 from pymysql import connect
-from pymysql.cursors import Cursor
 
 version = '0.1'
 
@@ -84,7 +83,7 @@ class MariaDB:
         self.port = info['port']
         self.db_user = info['user']
         self.db_password = info['password']
-        self.charset = info['charset']
+        self.charset = info.get('charset', None)
 
         database = self.db_name = kwargs.get('database', database)
         try:
@@ -231,19 +230,21 @@ class MariaDB:
 
     def insert_row(self, table, row):
         column_names = []
+
         for name in self.get_columns_metadata(table):
             column_names.append(name[3])
 
         sql = f"INSERT INTO {table} ({','.join(column_names[1:])}) VALUES ({('%s,' * len(row)).rstrip(',')});"
         try:
             lg.info(f'insert_row:{sql}')
-            self.cursor.execute(sql, row)
-            return self.cursor.lastrowid
+            return self.cursor.execute(sql, row)
         except Exception as err:
-            lg.error(f'insert_row:{str(err)}:{sql}')
+            lg.error(f'insert_row:{str(err)}:{sql}:{row}')
 
-    def update_row(self, table, _id, row):
+    def update_row(self, table, _id, *args):
         column_names = []
+
+        data = args[0]
         for name in self.get_columns_metadata(table):
             column_names.append(name[3])
 
@@ -255,7 +256,32 @@ class MariaDB:
 
         try:
             lg.info(f'update_row:{sql}')
-            return self.cursor.execute(sql, list(row) + [_id])
+            return self.cursor.execute(sql, list(data) + [_id])
+        except Exception as err:
+            lg.error(f'update_row:{str(err)}:{sql}')
+
+    def update_columns(self, table, _id, columns, data):
+        column_names = []
+
+        if not isinstance(columns, list) or not isinstance(columns, tuple):
+            columns = (columns, )
+
+        if not isinstance(data, list) or not isinstance(data, tuple):
+            data = (data, )
+
+        for name in self.get_columns_metadata(table):
+            column_names.append(name[3])
+
+        sql = f'UPDATE {table} SET '
+        for column, content in zip(columns, data):
+            cname = column_names[column] if isinstance(column, int) else column
+            sql += f'{cname}=%s,'
+
+        sql = sql.rstrip(',') + ' WHERE id=%s;'
+
+        try:
+            lg.info(f'update_row:{sql}')
+            return self.cursor.execute(sql, list(data) + [_id])
         except Exception as err:
             lg.error(f'update_row:{str(err)}:{sql}')
 
