@@ -6,6 +6,8 @@ from db_maria import MariaDB
 from zipfile import ZipFile
 from urllib.request import urlretrieve, urlopen
 
+import string
+import chardet
 import logging as lg
 
 _path = Path(__file__).cwd()
@@ -28,36 +30,36 @@ class App:
                 #  'country_code KEY (id)'
                 #  'comments VARCHAR(1024), '
                 #  ),
-                ('countries',
-                 'id SMALLINT(4) UNSIGNED NOT NULL AUTO_INCREMENT, '
+                ('country',
+                 'id INT UNSIGNED NOT NULL AUTO_INCREMENT, '
                  'name VARCHAR(100) UNIQUE NOT NULL, '
                  'code2 VARCHAR(2) UNIQUE NOT NULL, '
                  'code3 VARCHAR(3) UNIQUE NOT NULL, '
                  'PRIMARY KEY (id)'
                  ),
                 ('country_zones',
-                 'id SMALLINT(4) UNSIGNED NOT NULL AUTO_INCREMENT, '
-                 'country_id SMALLINT(4) UNSIGNED NOT NULL, '
-                 'code VARCHAR(4) NOT NULL, '
+                 'id INT UNSIGNED NOT NULL AUTO_INCREMENT, '
+                 'country_id INT UNSIGNED NOT NULL, '
+                 'code VARCHAR(3) NOT NULL, '
                  'name VARCHAR(100) NOT NULL, '
-                 'type VARCHAR(100), '
+                 'type VARCHAR(60), '
                  'PRIMARY KEY (id), '
                  'INDEX (country_id), '
-                 'CONSTRAINT name_type UNIQUE (code, name), '
+                 'CONSTRAINT id_code UNIQUE (country_id, code), '
                  'FOREIGN KEY (country_id) '
-                 'REFERENCES countries (id) '
+                 'REFERENCES country (id) '
                  'ON DELETE CASCADE',
                  ),
                 ('country_places',
-                 'id SMALLINT(4) UNSIGNED NOT NULL AUTO_INCREMENT, '
-                 'zone_id SMALLINT(4) UNSIGNED NOT NULL, '
-                 'code VARCHAR(4) NOT NULL, '
-                 'name VARCHAR(100) NOT NULL, '
+                 'id INT UNSIGNED NOT NULL AUTO_INCREMENT, '
+                 'zone_id INT UNSIGNED NOT NULL, '
+                 'code VARCHAR(3) NOT NULL, '
+                 'name VARCHAR(256) NOT NULL, '
                  'flags VARCHAR(9), '
                  'coordinates VARCHAR(16), '
                  'PRIMARY KEY (id), '
                  'INDEX (zone_id), '
-                 'CONSTRAINT code_name UNIQUE (code, name), '
+                 'CONSTRAINT id_code UNIQUE (zone_id, code), '
                  'FOREIGN KEY (zone_id) '
                  'REFERENCES country_zones (id) '
                  'ON DELETE CASCADE',
@@ -65,17 +67,24 @@ class App:
             )
 
         def init_tables():
-            if db.connect(db_name, connection=info):
-                for table in tables():
-                    table_name, table_sql = table
-                    if not db.table_exist(table_name):
-                        db.create_table(table_name, table_sql)
+            for table in tables():
+                table_name, table_sql = table
+                if not db.table_exist(table_name):
+                    db.create_table(table_name, table_sql)
 
-                print(f'Connected to database "{info["database"]}" as user "{info["user"]}" successful.')
-            else:
-                print(f'Could not connected to database "{info["database"]}" as user "{info["user"]}".')
+            if db.execute('SELECT COUNT(*) FROM country'):
+                if not db.fetchone()[0]:
+                    self.update_country()
 
-        db = self.db = MariaDB(log_level=lg.ERROR)
+            if db.execute('SELECT COUNT(*) FROM country_zones'):
+                if not db.fetchone()[0]:
+                    self.update_country_zones()
+
+            if db.execute('SELECT COUNT(*) FROM country_places'):
+                if not db.fetchone()[0]:
+                    self.update_country_places()
+
+        db = self.db = MariaDB(log_level=lg.DEBUG)
 
         info = {
             'host': 'localhost',
@@ -84,8 +93,14 @@ class App:
             'password': 'password',
             'database': db_name,
         }
-
-        init_tables()
+        if db.connect(db_name, connection=info):
+            print(f'Connected to database "{info["database"]}" as user "{info["user"]}" successful.')
+            if new:
+                sql = 'DROP TABLE IF EXISTS country_places, country_zones, country;'
+                db.execute(sql)
+            init_tables()
+        else:
+            print(f'Could not connected to database "{info["database"]}" as user "{info["user"]}".')
 
     @staticmethod
     def get_country_csv_file():
@@ -96,7 +111,7 @@ class App:
             table_body = li.find('tbody')
             rows = table_body.findChildren("tr")
 
-            with open("countries.csv", "w") as text_file:
+            with open("country.csv", "w") as text_file:
                 for row in rows:
                     line = ''
                     for idx, column in enumerate(row.text.split('\n')[:4]):
@@ -125,8 +140,8 @@ class App:
             with ZipFile(src_file_name, 'r') as z:
                 z.extractall('.')
 
-    def update_countries(self):
-        file = _path.joinpath('countries.csv')
+    def update_country(self):
+        file = _path.joinpath('country.csv')
         if not file.exists():
             self.get_country_csv_file()
 
@@ -135,38 +150,37 @@ class App:
                 results = reader(f, delimiter=',', quotechar='"')
 
                 for row in results:
-                    sql = 'SELECT id FROM countries WHERE countries.code2=%s;'
-                    # Todo: Check the all columns are the same not that only the code2 exists.
-                    if self.db.execute(sql, (row[1], )):
+                    sql = 'SELECT id FROM country WHERE country.code2="%s";'
+                    if self.db.execute(sql, (row[1].strip(' '), )):
                         continue
 
-                    self.db.insert_row('countries', row)
+                    self.db.insert_row('country', (row[0].strip(' '), row[1].strip(' '), row[2].strip(' ')))
 
     def update_country_zones(self):
-        file = '2019-2 SubdivisionCodes.csv'
+        reject = [
+            'parish', 'dependency', 'department', 'federal district', 'autonomous district', 'island council',
+            'autonomous region', 'special administrative region', 'special municipality', 'administration',
+            'metropolitan department', 'council area', 'district council area', 'local council',
+            'administrative atoll', 'zone', 'autonomous city', 'administrative region', 'administrative territory',
+            'oblast', 'economic prefecture', 'department', 'departments', 'free communal consortia', 'town council',
+        ]
 
+        file = '2019-2 SubdivisionCodes.csv'
         with open(file, errors='ignore') as f:
             results = reader(f, delimiter=',', quotechar='"')
 
-            for row in results:
-                if row[3].lower() in (
-                    'parish', 'dependency', 'department', 'federal district', 'autonomous district',
-                    'autonomous region', 'special administrative region', 'special municipality', 'administration',
-                    'metropolitan department', 'council area', 'district council area', 'local council',
-                    'Administrative atoll', 'zone', 'autonomous city', 'administrative region',
-                    'administrative territory', 'oblast', 'economic prefecture', 'department', 'administrative atoll',
-                    'autonomous province', 'autonomous republic', 'department', 'departments',
-                    'free communal consortia', 'town council', 'island council', 'outlying area'
-                ) or not row[3].strip(' '):
+            for idx, row in enumerate(results):
+                if row[3].lower() in reject:
                     continue
 
-                sql = 'SELECT id FROM countries WHERE countries.code2=%s;'
-                if self.db.execute(sql, (row[0], )):
+                for column, value in enumerate(row):
+                    j = value.replace('?', '').replace('\n', ' ')
+                    row[column] = j
+
+                sql = 'SELECT id FROM country WHERE country.code2=%s;'
+                if self.db.execute(sql, (row[0],)):
                     _id = self.db.fetchone()[0]
-                    sql = 'SELECT id FROM country_zones WHERE country_zones.code=%s;'
-                    # Todo: Check the all columns are the same not that only the id exists.
-                    if _id and not self.db.execute(sql, (row[1],)):
-                        self.db.insert_row('country_zones', (_id, row[1], row[2], row[3]))
+                    self.db.insert_row('country_zones', (_id, row[1], row[2], row[3]))
 
     def update_country_places(self):
         def get_files():
@@ -177,35 +191,43 @@ class App:
             return tuple(sorted(file_list))
 
         for file in get_files():
-            with open(file, errors='ignore') as f:
+            with open(file, encoding='iso-8859-1') as f:
                 results = reader(f, delimiter=',', quotechar='"')
                 for i, row in enumerate(results):
                     zone_code = row[5].strip()
-                    location_name = row[3]
-                    location_code = row[2]
-                    location_flags = row[6]
-                    location_coordinates = row[10]
-                    sql = 'SELECT id FROM country_zones WHERE country_zones.code=%s;'
-                    if self.db.execute(sql, (zone_code, )):
-                        _id = self.db.fetchone()[0]
-                        if _id:
-                            sql = 'SELECT id FROM country_places WHERE country_places.code=%s;'
-                            # Todo: Check the all columns are the same not that only the location_code exists.
-                            if self.db.execute(sql, (location_code, )):
-                                continue
+                    place_code = row[2]
+                    place_name = row[3]
+                    place_flags = row[6]
+                    place_coordinates = row[10]
+                    sql = 'SELECT id FROM country WHERE country.code2=%s;'
 
+                    if self.db.execute(sql, (row[1], )):
+                        country_id = self.db.fetchone()[0]
+                        sql = 'SELECT country_zones.id ' \
+                              'FROM country_zones ' \
+                              'WHERE country_zones.country_id=%s AND country_zones.code=%s;'
+
+                        if self.db.execute(sql, (country_id, zone_code)):
+                            zone_id = self.db.fetchone()[0]
                             self.db.insert_row('country_places', (
-                                _id, location_code, location_name, location_flags, location_coordinates))
+                                zone_id, place_code, place_name, place_flags, place_coordinates))
 
 
 def main():
     app = App()
-    app.setup('mydb')
-    app.get_country_zone_csv_files()
+    app.setup('countries', new=True)
 
-    app.update_countries()
-    app.update_country_zones()
-    app.update_country_places()
+    app.get_country_zone_csv_files()
+    sql = f'SELECT country.name, country_zones.name, country_zones.code, country_places.name ' \
+          f'FROM country ' \
+          f'JOIN country_zones ' \
+          f'ON country.id=country_zones.country_id ' \
+          f'JOIN country_places ' \
+          f'ON country_zones.id=country_places.zone_id WHERE country.code2="CA" AND country_zones.code="ON";'
+
+    if app.db.execute(sql):
+        for idx, row in enumerate(app.db.fetchall()):
+            print(idx, row)
 
 
 if __name__ == '__main__':

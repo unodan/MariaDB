@@ -86,16 +86,18 @@ class MariaDB:
         self.charset = info.get('charset', None)
 
         database = self.db_name = kwargs.get('database', database)
+
         try:
             self.conn = connect(
                 host=self.host, port=self.port,
                 user=self.db_user, passwd=self.db_password, charset=self.charset)
+
             self.cursor = self.conn.cursor()
 
             if database:
                 if not self.database_exist(database):
                     self.create_database(database)
-                self.use(database)
+            self.use(database)
 
             lg.info(f'connect:Connection authenticated:('
                     f'host={self.host}, '
